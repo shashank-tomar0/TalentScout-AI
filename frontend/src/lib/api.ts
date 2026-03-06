@@ -132,11 +132,11 @@ export interface ComparisonResult {
   arbitration_summary: string;
 }
 
-export async function compareCandidates(ids: number[], jdText: string = "", fileHashes: string[] = []): Promise<ComparisonResult> {
+export async function compareCandidates(ids: number[], jdText: string = "", fileHashes: string[] = [], question: string = "", manualCandidates: any[] = []): Promise<ComparisonResult> {
   const res = await fetch(`${API}/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ candidate_ids: ids, file_hashes: fileHashes, jd_text: jdText }),
+    body: JSON.stringify({ candidate_ids: ids, file_hashes: fileHashes, jd_text: jdText, question: question, manual_candidates: manualCandidates }),
   });
   return res.json();
 }
@@ -163,4 +163,17 @@ export async function generateOutreach(id: number | undefined, jdText: string = 
   });
   if (!res.ok) throw new Error("Outreach generation failed");
   return res.json();
+}
+
+export async function sendDirectEmail(toEmail: string, subject: string, body: string): Promise<{ message?: string; error?: string }> {
+  try {
+    const res = await fetch(`${API}/send_email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to_email: toEmail, subject, body }),
+    });
+    return res.json();
+  } catch (errValue: any) {
+    return { error: errValue.message || "Network error" };
+  }
 }

@@ -2,15 +2,21 @@
 import { useEffect, useRef } from "react";
 
 const WEIGHTS = [
-  { name: "Prior Internships", pct: 20 }, { name: "Skills & Certifications", pct: 20 },
-  { name: "Projects", pct: 15 }, { name: "College CGPA", pct: 10 },
-  { name: "Quantifiable Achievements", pct: 10 }, { name: "Experience", pct: 5 },
-  { name: "Extra-curricular", pct: 5 }, { name: "Language Fluency", pct: 3 },
-  { name: "Online Presence", pct: 3 }, { name: "Degree Type", pct: 3 },
-  { name: "College Ranking", pct: 2 }, { name: "School Marks", pct: 2 },
+  { name: "Prior Internships", pct: 20 },
+  { name: "Technical Skills", pct: 20 },
+  { name: "Projects", pct: 15 },
+  { name: "CGPA / Academic", pct: 10 },
+  { name: "Quantifiable Achievements", pct: 10 },
+  { name: "Work Experience", pct: 5 },
+  { name: "Extra-Curricular", pct: 5 },
+  { name: "Degree Quality", pct: 3 },
+  { name: "Online Presence", pct: 3 },
+  { name: "Language Fluency", pct: 3 },
+  { name: "College Tier", pct: 2 },
+  { name: "School Marks", pct: 2 }
 ];
 const RADAR_VALUES = [0.85, 0.9, 0.75, 0.82, 0.6, 0.5, 0.7, 0.65, 0.8, 0.7, 0.55, 0.9];
-const RADAR_LABELS = ["Internships", "Skills", "Projects", "CGPA", "Achievements", "Experience", "Extra-curr.", "Languages", "Online", "Degree", "College", "School"];
+const RADAR_LABELS = ["Internships", "Skills", "Projects", "CGPA", "Awards", "Work Exp", "Extra", "Degree", "Online", "Languages", "College", "School"];
 
 function RadarChart() {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -80,14 +86,14 @@ export default function Scoring() {
               ⚡ Anti-overfitting: word count is never a scoring signal
             </div>
             <div className="reveal reveal-d3" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {WEIGHTS.map((w, i) => (
+              {WEIGHTS.map((w: any, i: number) => (
                 <div key={i}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
                     <span style={{ fontSize: "0.82rem", fontWeight: 500 }}>{w.name}</span>
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.78rem", color: "var(--cyan)" }}>{w.pct}%</span>
                   </div>
                   <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 100, overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 100, width: `${w.pct * 5}%`, background: "linear-gradient(90deg, var(--cyan), var(--violet))", transformOrigin: "left", animation: "growWidth 1.2s ease both" }} />
+                    <div style={{ height: "100%", borderRadius: 100, width: `${(w.pct / 20) * 100}%`, background: "linear-gradient(90deg, var(--cyan), var(--violet))", transformOrigin: "left", animation: "growWidth 1.2s ease both" }} />
                   </div>
                 </div>
               ))}

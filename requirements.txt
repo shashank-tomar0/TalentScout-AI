@@ -11,3 +11,4 @@ pytesseract
 pdf2image
 PyMuPDF
 Pillow
+spacy

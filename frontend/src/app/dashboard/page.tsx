@@ -8,7 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import {
   Candidate, fetchCandidates, deleteCandidates,
   uploadResume, generateEmail, generateJD, chatWithResume,
-  compareCandidates, generateInterview, generateOutreach, ComparisonResult, InterviewScript,
+  compareCandidates, generateInterview, generateOutreach, sendDirectEmail, ComparisonResult, InterviewScript,
   WS_URL, API_URL
 } from "@/lib/api";
 
@@ -28,7 +28,7 @@ const ROLE_TEMPLATES: Record<string, string> = {
 
 const BREAKDOWN_LABELS: Record<string, string> = {
   internships: "Prior Internships",
-  skills: "Skills/Certs",
+  skills: "Technical Skills",
   projects: "Projects",
   cgpa: "CGPA / Academic",
   achievements: "Quantifiable Achievements",
@@ -38,7 +38,7 @@ const BREAKDOWN_LABELS: Record<string, string> = {
   online_presence: "Online Presence",
   languages: "Language Fluency",
   college_rank: "College Tier",
-  school_marks: "School Marks (10th/12th)",
+  school_marks: "School Marks",
 };
 
 export default function DashboardPage() {
@@ -66,10 +66,13 @@ export default function DashboardPage() {
   const [logExpanded, setLogExpanded] = useState(true);
   const [processingCount, setProcessingCount] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [comparison, setComparison] = useState<ComparisonResult | null>(null);
-  const [interviewScript, setInterviewScript] = useState<InterviewScript | null>(null);
   const [outreachMessage, setOutreachMessage] = useState<string>("");
   const [featureLoading, setFeatureLoading] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const [sentSuccess, setSentSuccess] = useState<string | null>(null);
+  const [interviewScript, setInterviewScript] = useState<InterviewScript | null>(null);
+  const [comparison, setComparison] = useState<ComparisonResult | null>(null);
+  const [battleQuestion, setBattleQuestion] = useState("");
   const [showHowItWorks, setShowHowItWorks] = useState(false);
   const [howItWorksSlide, setHowItWorksSlide] = useState(0);
   const [showRoleTemplates, setShowRoleTemplates] = useState(false);
@@ -77,6 +80,22 @@ export default function DashboardPage() {
   const [showConfirmPurge, setShowConfirmPurge] = useState(false);
   const [showJdPrompt, setShowJdPrompt] = useState(false);
   const [jdPromptText, setJdPromptText] = useState("");
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [manualCandidate, setManualCandidate] = useState<Record<string, any>>({
+    name: "Manual Candidate",
+    internships: 0,
+    skills: 0,
+    projects: 0,
+    cgpa: 0,
+    achievements: 0,
+    experience: 0,
+    extra_curricular: 0,
+    degree: 2,
+    online_presence: 0,
+    languages: 0,
+    college_rank: 0,
+    school_marks: 0
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -112,21 +131,30 @@ export default function DashboardPage() {
       ws.onclose = () => { setWsStatus("offline"); setTimeout(() => connectWS(userId), 4000); };
       ws.onmessage = (e) => {
         if (e.data.startsWith("COMPLETE_JSON:")) {
-          setProcessingCount(p => Math.max(0, p - 1));
-          const d: Candidate = JSON.parse(e.data.replace("COMPLETE_JSON:", ""));
-          setCandidates((prev) => {
-            const idx = prev.findIndex((c) => c.filename === d.filename);
-            const next = idx !== -1 ? [...prev] : [...prev, d];
-            if (idx !== -1) next[idx] = d;
-            return next.sort((a, b) => b.score - a.score);
-          });
-          // Update selected if this is the one
-          setSelected(prev => (prev?.filename === d.filename) ? d : prev);
+          console.log("WebSocket Inbound:", e.data);
+          try {
+            setProcessingCount(p => Math.max(0, p - 1));
+            const d: Candidate = JSON.parse(e.data.replace("COMPLETE_JSON:", ""));
+            setCandidates((prev) => {
+              const idx = prev.findIndex((c) => c.filename === d.filename);
+              const next = idx !== -1 ? [...prev] : [...prev, d];
+              if (idx !== -1) next[idx] = d;
+              return next.sort((a, b) => b.score - a.score);
+            });
+            // Update selected if this is the one
+            setSelected(prev => (prev?.filename === d.filename) ? d : prev);
+          } catch (err) {
+            console.error("Parse error:", err, e.data);
+            addLog("! Data sync error — see console.");
+          }
         } else if (e.data.startsWith("ERROR_JSON:")) {
           setProcessingCount(p => Math.max(0, p - 1));
           addLog("! " + e.data.replace("ERROR_JSON:", ""));
         } else if (!e.data.startsWith("COMPLETE:")) {
           addLog(e.data);
+          if (e.data.includes("🚨") || e.data.includes("SECURITY_ALERT") || e.data.includes("MALICIOUS")) {
+            setLogExpanded(true);
+          }
         }
       };
     } catch { addLog("! WebSocket unavailable."); }
@@ -170,6 +198,29 @@ export default function DashboardPage() {
     setEmailLoading(false);
   };
 
+  const handleDirectSend = async () => {
+    if (!selected?.email || !emailContent || sendingEmail) return;
+    setSendingEmail(true);
+    try {
+      const subject = emailType === "accept"
+        ? `TalentScout: Next Steps for ${selected.name}`
+        : `Following up on your application - ${selected.name}`;
+
+      const res = await sendDirectEmail(selected.email, subject, emailContent);
+      if (res.message) {
+        addLog(`✓ Email dispatched to ${selected.email}`);
+        setModal(null);
+        setSentSuccess(`Email successfully sent to ${selected.email}`);
+        setTimeout(() => setSentSuccess(null), 4000);
+      } else {
+        addLog(`! Delivery failed: ${res.error || "Check SMTP config"}`);
+      }
+    } catch {
+      addLog("! Network disruption during dispatch.");
+    }
+    setSendingEmail(false);
+  };
+
   const sendChat = async () => {
     if (!chatInput.trim() || !selected || chatLoading) return;
     const q = chatInput.trim(); setChatInput("");
@@ -197,6 +248,7 @@ export default function DashboardPage() {
 
   const startBattle = async () => {
     if (selectedIds.length < 2) return addLog("! Select at least 2 candidates for Battle Royale.");
+    if (selectedIds.length > 6) return addLog("! Neural Overload: Select a maximum of 6 candidates to prevent context token overflows.");
     setFeatureLoading(true); setModal("battle");
     try {
       // selectedIds are already file_hashes — pass them directly
@@ -207,9 +259,9 @@ export default function DashboardPage() {
         .map(c => c.id)
         .filter((id): id is number => id !== undefined && id !== null);
 
-      if (fileHashes.length < 2) throw new Error("Could not resolve candidate hashes.");
+      if (fileHashes.length === 0 && ids.length === 0) throw new Error("Could not resolve candidate hashes.");
 
-      const res = await compareCandidates(ids, jd, fileHashes);
+      const res = await compareCandidates(ids, jd, fileHashes, battleQuestion);
       setComparison(res);
     } catch (e: any) { addLog(`! Battle failed: ${e.message}`); }
     setFeatureLoading(false);
@@ -304,7 +356,7 @@ export default function DashboardPage() {
 
   const HOW_IT_WORKS_SLIDES = [
     { icon: <Scan className="w-6 h-6 text-[var(--cyan)]" />, title: "VISUAL OCR PIPELINE", desc: "Each PDF is rendered as a 300 DPI image using PyMuPDF — exactly what a human eye would see. Tesseract OCR then reads the visible text. Hidden white text, invisible keywords, and background-matching text are automatically excluded.", steps: ["PDF → PyMuPDF renders each page as image", "Tesseract OCR reads visible text only", "pdfplumber extracts ALL raw text (including hidden)", "If raw text >> OCR text → hidden stuffing detected"] },
-    { icon: <Target className="w-6 h-6 text-[var(--emerald)]" />, title: "SCORING METHODOLOGY", desc: "12 weighted criteria scored against the Job Description, totaling 100 points max.", steps: ["Prior Internships: 20 pts | Skills/Certs: 20 pts", "Projects: 15 pts | CGPA: 10 pts", "Achievements: 10 pts | Experience: 5 pts", "Extra-Curricular: 5 pts | Degree: 3 pts", "Online Presence: 3 pts | Languages: 3 pts", "College Tier: 2 pts | School Marks: 2 pts"] },
+    { icon: <Target className="w-6 h-6 text-[var(--emerald)]" />, title: "SCORING METHODOLOGY", desc: "12 weighted criteria scored against the Job Description, totaling 100 points max.", steps: ["Prior Internships: 20 pts | Technical Skills: 20 pts", "Projects: 15 pts | CGPA/Academic: 10 pts", "Quantifiable Achievements: 10 pts | Work Experience: 5 pts", "Extra-Curricular: 5 pts | Degree Quality: 3 pts", "Online Presence: 3 pts | Language Fluency: 3 pts", "College Tier: 2 pts | School Marks: 2 pts"] },
     { icon: <Shield className="w-6 h-6 text-[var(--rose)]" />, title: "ANTI-MANIPULATION ENGINE", desc: "A multi-layer defense system detects prompt injection and keyword stuffing.", steps: ["Hidden text detection via OCR vs raw text comparison", "AI firewall analyzes text for injection commands", "Keyword stuffing: 30+ uncontextualized keywords flagged", "Microscopic text (<5.5pt) automatically filtered", "Background-matching color text stripped"] },
     { icon: <TrendingUp className="w-6 h-6 text-[var(--violet)]" />, title: "AUTHENTICITY INDEX", desc: "Cross-references resume claims against public data for verification.", steps: ["GitHub profile verified: repos, followers, activity", "Portfolio links checked for existence", "Trust score (0-100) based on verified vs claimed skills", "Low authenticity → AI summary warns recruiters", "Culture fit assessed via AI behavioral analysis"] },
   ];
@@ -589,7 +641,11 @@ export default function DashboardPage() {
                   ];
                   return (
                     <div key={c.id || i} onClick={() => { setSelected(c); setChatMessages([]); }}
-                      className={`group relative border rounded-xl p-4 flex items-center gap-4 cursor-pointer transition-all duration-300 ${isTop3 ? rankColors[i] : 'bg-white/[0.02] border-white/5 hover:bg-[rgba(6,182,212,0.04)] hover:border-[rgba(6,182,212,0.3)]'}`}>
+                      className={`group relative border rounded-xl p-4 flex items-center gap-4 cursor-pointer transition-all duration-300 
+                        ${c.prompt_injection_detected
+                          ? 'bg-[var(--rose)]/10 border-[var(--rose)]/40 shadow-[0_0_20px_rgba(244,63,94,0.2)] animate-pulse'
+                          : isTop3 ? rankColors[i] : 'bg-white/[0.02] border-white/5 hover:bg-[rgba(6,182,212,0.04)] hover:border-[rgba(6,182,212,0.3)]'
+                        }`}>
                       <div className="w-10 flex justify-center items-center" onClick={(e) => { e.stopPropagation(); toggleSelect(c.file_hash!); }}>
                         <div className={`w-5 h-5 rounded border transition-all flex items-center justify-center ${selectedIds.includes(c.file_hash!) ? "bg-[var(--cyan)] border-[var(--cyan)] shadow-[0_0_10px_rgba(6,182,212,0.5)]" : "border-white/10 bg-white/5 group-hover:border-[var(--cyan)]/50"}`}>
                           {selectedIds.includes(c.file_hash!) && <Check className="w-4 h-4 text-black stroke-[4px]" />}
@@ -654,7 +710,19 @@ export default function DashboardPage() {
               </button>
               {logExpanded && (
                 <div className="p-4 max-h-48 overflow-y-auto font-mono text-[10px] space-y-1 no-scrollbar text-white/40">
-                  {logs.map((l, i) => <div key={i} className={l.startsWith("!") ? "text-[var(--rose)]" : l.startsWith("✓") ? "text-[var(--cyan)]" : ""}>{l}</div>)}
+                  {logs.map((l, i) => {
+                    let cls = "";
+                    if (l.includes("🚨") || l.includes("SECURITY_ALERT") || l.includes("MALICIOUS")) {
+                      cls = "text-[var(--rose)] font-black animate-pulse shadow-[0_0_10px_rgba(244,63,94,0.2)] bg-[var(--rose)]/5 px-2 py-0.5 rounded-md";
+                    } else if (l.startsWith("!")) {
+                      cls = "text-[var(--rose)]";
+                    } else if (l.startsWith("✓")) {
+                      cls = "text-[var(--cyan)] font-bold";
+                    } else if (l.startsWith(">")) {
+                      cls = "text-white/60";
+                    }
+                    return <div key={i} className={cls}>{l}</div>;
+                  })}
                   <div ref={logEndRef} />
                 </div>
               )}
@@ -817,6 +885,38 @@ export default function DashboardPage() {
                             <span className={`text-4xl font-black ${selected.trust_score >= 80 ? 'text-[var(--emerald)]' : selected.trust_score >= 50 ? 'text-yellow-500' : 'text-red-500'}`}>{selected.trust_score}%</span>
                           </div>
                           <p className="text-xs text-white/70 italic leading-relaxed border-l-2 border-white/10 pl-6 py-2">{selected.trust_reasoning || "Neural profile verified."}</p>
+                          {(selected.github_username || selected.github_stats) && (
+                            <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+                              {selected.github_username ? (
+                                <a
+                                  href={`https://github.com/${selected.github_username}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 text-white/60 hover:text-[var(--cyan)] transition-colors group/gh"
+                                >
+                                  <Github className="w-4 h-4 group-hover/gh:scale-110 transition-transform" />
+                                  <span className="text-xs font-semibold">@{selected.github_username}</span>
+                                  <ExternalLink className="w-2.5 h-2.5 opacity-0 group-hover/gh:opacity-100 transition-opacity" />
+                                </a>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <Github className="w-4 h-4 text-white/60" />
+                                  <span className="text-xs font-semibold text-white/80">GitHub</span>
+                                </div>
+                              )}
+                              {selected.github_verified || (selected.github_stats?.verified) ? (
+                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                                  <Shield className="w-3 h-3 text-emerald-500" />
+                                  <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Verified</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 opacity-70">
+                                  <AlertTriangle className="w-3 h-3 text-white/50" />
+                                  <span className="text-[10px] font-black text-white/50 uppercase tracking-widest">Unverified</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -946,11 +1046,21 @@ export default function DashboardPage() {
                 <Mail className="w-6 h-6 text-[var(--cyan)]" /> {emailType === "accept" ? "Acceptance Dispatch" : "Constructive Rejection"}
               </h2>
               {emailLoading ? <div className="h-48 flex items-center justify-center text-[var(--cyan)] text-xs font-mono animate-pulse uppercase tracking-[0.5em]">Synthesizing Narrative...</div> :
-                <textarea value={emailContent} readOnly className="w-full h-80 bg-black/40 border border-white/5 rounded-2xl p-6 text-sm text-white/80 focus:outline-none resize-none no-scrollbar" />
+                <textarea value={emailContent} onChange={(e) => setEmailContent(e.target.value)} className="w-full h-80 bg-black/40 border border-white/5 rounded-2xl p-6 text-sm text-white/80 focus:outline-none focus:border-[var(--cyan)]/30 resize-none no-scrollbar transition-all" />
               }
-              <button onClick={() => { navigator.clipboard.writeText(emailContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }} className="mt-6 w-full py-4 bg-[var(--cyan)] rounded-xl text-black font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:brightness-110">
-                {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />} {copied ? "COPIED TO CACHÉ" : "COPY TO CLIPBOARD"}
-              </button>
+              <div className="flex gap-3 mt-6">
+                <button onClick={() => { navigator.clipboard.writeText(emailContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }} className="flex-1 py-4 border border-white/10 rounded-xl text-white font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-white/5">
+                  {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />} {copied ? "COPIED" : "COPY"}
+                </button>
+                <button
+                  onClick={handleDirectSend}
+                  disabled={sendingEmail || !selected?.email}
+                  className="flex-[2] py-4 bg-[var(--cyan)] rounded-xl text-black font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:brightness-110 disabled:opacity-50"
+                >
+                  {sendingEmail ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                  {sendingEmail ? "RECRUITING..." : selected?.email ? `SEND TO ${selected.email}` : "NO EMAIL FOUND"}
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -1042,6 +1152,105 @@ export default function DashboardPage() {
               <button onClick={() => setModal(null)} className="absolute top-8 right-8 text-white/40 hover:text-white"><X className="w-6 h-6" /></button>
               <h2 className="text-3xl font-black text-white mb-2 uppercase tracking-wide flex items-center gap-4"><Zap className="w-8 h-8 text-[var(--cyan)]" /> BATTLE ROYALE</h2>
               <p className="text-[10px] font-mono text-[var(--muted)] mb-10 tracking-[0.4em] uppercase">Neutral High-Volume Comparative Arbitration</p>
+
+              <div className="mb-6 flex flex-col gap-4">
+                <div className="flex justify-between items-end gap-6 bg-[var(--cyan)]/5 border border-[var(--cyan)]/20 p-6 rounded-2xl">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <MessageSquare className="w-3.5 h-3.5 text-[var(--cyan)]" />
+                      <label className="text-[11px] font-black text-white/80 uppercase tracking-[0.2em] block">RECRUITER'S ARBITRATION QUESTION</label>
+                    </div>
+                    <p className="text-[10px] text-[var(--muted)] mb-3 italic tracking-tight opacity-70">Ask anything (e.g., "Who has more leadership experience?" or "Who is best for a remote culture?"). AI will scan the FULL text of all resumes.</p>
+                    <div className="relative group">
+                      <input
+                        type="text"
+                        value={battleQuestion}
+                        onChange={(e) => setBattleQuestion(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && startBattle()}
+                        placeholder="Enter your specific arbitration focus..."
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-xs text-white outline-none focus:border-[var(--cyan)] transition-all placeholder:text-white/20"
+                      />
+                      <button
+                        onClick={startBattle}
+                        className="absolute right-2 top-2 px-5 py-2 bg-[var(--cyan)] hover:brightness-110 text-black text-[10px] font-black uppercase tracking-widest rounded-lg transition-all shadow-[0_0_15px_rgba(6,182,212,0.3)]"
+                      >
+                        COMMENCE BATTLE
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowManualEntry(!showManualEntry)}
+                    className={`px-4 py-2 rounded-xl text-[10px] font-bold border transition-all ${showManualEntry ? 'bg-[var(--cyan)] text-black border-[var(--cyan)]' : 'border-white/10 text-[var(--muted)] hover:text-white hover:bg-white/5'}`}
+                  >
+                    {showManualEntry ? "HIDE MANUAL ENTRY" : "ADD MANUAL CANDIDATE"}
+                  </button>
+                </div>
+              </div>
+
+              {showManualEntry && (
+                <div className="mb-8 p-6 bg-white/[0.02] border border-white/5 rounded-2xl animate-in fade-in slide-in-from-top-4 duration-300">
+                  <p className="text-[11px] font-black text-[var(--cyan)] uppercase tracking-[0.3em] mb-4">Manual Factor Entry</p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-white/40 uppercase">Name</label>
+                      <input type="text" value={manualCandidate.name} onChange={(e) => setManualCandidate({ ...manualCandidate, name: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[var(--cyan)]/50" />
+                    </div>
+                    {Object.entries(BREAKDOWN_LABELS).map(([key, label]) => (
+                      <div key={key} className="space-y-1.5">
+                        <label className="text-[9px] font-bold text-white/40 uppercase truncate block">{label}</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={manualCandidate[key]}
+                          onChange={(e) => setManualCandidate({ ...manualCandidate, [key]: parseFloat(e.target.value) || 0 })}
+                          className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[var(--cyan)]/50"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-6 flex justify-end">
+                    <button
+                      onClick={async () => {
+                        setFeatureLoading(true);
+                        try {
+                          const fileHashes = selectedIds.filter(Boolean);
+                          const ids = candidates
+                            .filter(c => selectedIds.includes(c.file_hash || ""))
+                            .map(c => c.id)
+                            .filter((id): id is number => id !== undefined && id !== null);
+
+                          if (fileHashes.length + 1 > 6) {
+                            addLog("! Token Limit: Cannot exceed 6 total candidates in Battle Royale.");
+                            setFeatureLoading(false);
+                            return;
+                          }
+
+                          const manualDataPayload = {
+                            name: manualCandidate.name,
+                            score: Object.entries(manualCandidate).reduce((acc, [k, v]) => k === 'name' ? acc : acc + (typeof v === 'number' ? v : 0), 0),
+                            skills: [],
+                            experience_years: manualCandidate.experience || 0,
+                            project_count: manualCandidate.projects || 0,
+                            cgpa: manualCandidate.cgpa || 0,
+                            internships: manualCandidate.internships || 0
+                          };
+
+                          const res = await compareCandidates(ids, jd, fileHashes, battleQuestion, [manualDataPayload]);
+                          setComparison(res);
+                        } catch (err) {
+                          addLog("! Battle error with manual candidate.");
+                        } finally {
+                          setFeatureLoading(false);
+                        }
+                      }}
+                      className="px-6 py-2.5 bg-[var(--cyan)] text-black text-[10px] font-black uppercase tracking-widest rounded-xl hover:brightness-110 shadow-[0_0_15px_rgba(6,182,212,0.4)]"
+                    >
+                      Compare with Manual Data
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {featureLoading ? <div className="h-96 flex flex-col items-center justify-center gap-4"><Loader2 className="w-12 h-12 text-[var(--cyan)] animate-spin" /><p className="text-[10px] font-mono animate-pulse uppercase tracking-widest text-[var(--cyan)]">SIMULATING CONFLICT...</p></div> : comparison && (
                 <div className="space-y-6 max-h-[70vh] overflow-y-auto no-scrollbar pr-2">
                   {/* Section 1: Winner Verdict */}
@@ -1061,15 +1270,26 @@ export default function DashboardPage() {
                     )}
                   </div>
 
-                  {/* Section 2: Dueling Matrix */}
-                  <div className="bg-white/[0.03] border border-white/10 p-6 rounded-2xl">
-                    <p className="text-[11px] font-black text-[var(--muted)] uppercase mb-5 tracking-[0.3em]">DUELING MATRIX</p>
-                    <div className="space-y-2">
+                  {/* Section 2: Dueling Matrix (Horizontal) */}
+                  <div className="space-y-4">
+                    <p className="text-[11px] font-black text-[var(--muted)] uppercase tracking-[0.3em] px-2">Dueling Matrix (Neural Ranks)</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       {comparison!.comparison_matrix?.map((m, idx) => (
-                        <div key={idx} className={`flex items-center gap-4 p-4 border transition-all rounded-xl ${m.name === comparison!.winner ? 'bg-[var(--emerald)]/10 border-[var(--emerald)]/30' : 'bg-white/[0.02] border-white/5'}`}>
-                          <span className={`text-[11px] font-black font-mono w-14 shrink-0 ${m.name === comparison!.winner ? 'text-[var(--emerald)]' : 'text-[var(--cyan)]'}`}>RANK #{m.rank}</span>
-                          <span className={`text-sm font-black uppercase tracking-wider flex-1 ${m.name === comparison!.winner ? 'text-[var(--emerald)]' : 'text-white/70'}`}>{m.name}</span>
-                          <span className="text-[10px] text-white/40 italic text-right max-w-[300px] truncate">{m.kill_factor}</span>
+                        <div key={idx} className={`relative flex flex-col p-6 border transition-all rounded-2xl group/card overflow-hidden ${m.name === comparison!.winner ? 'bg-[var(--emerald)]/10 border-[var(--emerald)]/30 ring-1 ring-[var(--emerald)]/20' : 'bg-white/[0.02] border-white/5 hover:border-white/20'}`}>
+                          {m.name === comparison!.winner && (
+                            <div className="absolute -top-6 -right-6 w-16 h-16 bg-[var(--emerald)] opacity-10 blur-xl group-hover/card:opacity-20 transition-opacity" />
+                          )}
+                          <div className="flex justify-between items-start mb-4">
+                            <span className={`text-[10px] font-black font-mono px-2 py-0.5 rounded border ${m.name === comparison!.winner ? 'bg-[var(--emerald)]/20 border-[var(--emerald)] text-[var(--emerald)]' : 'bg-white/5 border-white/10 text-white/40'}`}>RANK #{m.rank}</span>
+                            {m.name === comparison!.winner && <Zap className="w-4 h-4 text-[var(--emerald)]" />}
+                          </div>
+                          <h4 className={`text-sm font-black uppercase tracking-wider mb-2 ${m.name === comparison!.winner ? 'text-[var(--emerald)]' : 'text-white'}`}>{m.name}</h4>
+                          <p className="text-[11px] text-white/60 leading-relaxed line-clamp-4 italic group-hover/card:text-white/80 transition-colors">"{m.kill_factor}"</p>
+                          {m.name === comparison!.winner && (
+                            <div className="mt-4 pt-4 border-t border-[var(--emerald)]/20">
+                              <span className="text-[8px] font-black text-[var(--emerald)] uppercase tracking-widest">Arbitration: COMPLETED</span>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1200,6 +1420,21 @@ export default function DashboardPage() {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+
+      {/* ── Success Toast ── */}
+      <AnimatePresence>
+        {sentSuccess && (
+          <motion.div
+            initial={{ opacity: 0, y: 40, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] px-6 py-4 rounded-2xl bg-[var(--emerald)] text-black font-black uppercase tracking-widest text-xs flex items-center gap-3 shadow-[0_0_40px_rgba(16,185,129,0.5)]"
+          >
+            <CheckCircle2 className="w-5 h-5" />
+            {sentSuccess}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div >
   );
 }

@@ -25,17 +25,12 @@ echo  [3/3] Launching Landing Page (Next.js) on port 3001...
 start "TalentScout :: Frontend (Next.js)" cmd /k "echo [FRONTEND] Installing packages (first run may take a minute)... && cd frontend && npm install && npm run dev -- --port 3001"
 
 echo.
-echo  [3/3] Launching Legacy ATS Dashboard on port 3000...
-start "TalentScout :: ATS Dashboard (Legacy)" cmd /k "echo [DASHBOARD] Starting... && python frontend_server.py"
-
-echo.
 echo  =============================================
 echo   All services launched!
 echo  =============================================
 echo   Backend API:     http://localhost:8000
 echo   API Docs:        http://localhost:8000/docs
 echo   Landing Page:    http://localhost:3001
-echo   ATS Dashboard:   http://localhost:3000
 echo  =============================================
 echo.
 echo If "Disconnected" appears in UI, check the Backend terminal for errors.
