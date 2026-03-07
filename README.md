@@ -19,6 +19,59 @@ Our lightning-fast architecture orchestrates real-time analysis, parallel neural
 
 ```mermaid
 graph TD
+    subgraph FRONTEND ["🖥️ Next.js Dashboard"]
+        UI["Immersive 3D UI<br/>(Tailwind + Framer)"]
+        AUTH["Clerk Auth<br/>(SSO / Email)"]
+        WS_CLIENT["Live Telemetry<br/>(WebSocket)"]
+    end
+
+    subgraph BACKEND ["⚙️ FastAPI Core Engine"]
+        API["REST API"]
+        WSB["Live Broadcaster"]
+        SEM["Parallel AI Orchestrator"]
+    end
+
+    subgraph PIPELINE ["🔬 The 8-Phase Forensic Pipeline"]
+        direction TB
+        P1["1. Dual-Engine PDF Extraction"]
+        P2["2. Visual OCR Fallback"]
+        P3["3. Hidden Text Detection"]
+        P4["4. 7-Layer AI Security Firewall"]
+        P5["5. 12-Factor Structural Extraction"]
+        P6["6. Parallel Neural Analysis"]
+        P7["7. Deterministic Scoring"]
+        P8["8. Live Signal Dispatch"]
+    end
+
+    subgraph SERVICES ["🌐 Intelligence Layer"]
+        GROQ["Groq (LLaMA 3.1)"]
+        GITHUB["GitHub API"]
+        DB[("Live SQLite")]
+    end
+
+    UI --> API
+    API --> PIPELINE
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    P4 --> P5
+    P5 --> P6
+    P6 --> GROQ
+    P6 --> GITHUB
+    P6 --> P7
+    P7 --> P8
+    P8 --> DB
+    P8 --> WSB
+    WSB --> WS_CLIENT
+    WS_CLIENT --> UI
+```
+
+---
+
+## ⚡ Real-Time Upload Architecture
+
+```mermaid
+graph TD
     %% Styling
     classDef user fill:#6366f1,stroke:#4f46e5,color:#fff,stroke-width:2px
     classDef frontend fill:#0f172a,stroke:#38bdf8,color:#38bdf8,stroke-width:2px
