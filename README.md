@@ -19,51 +19,85 @@ Our lightning-fast architecture orchestrates real-time analysis, parallel neural
 
 ```mermaid
 graph TD
-    subgraph FRONTEND ["🖥️ Next.js Dashboard"]
-        UI["Immersive 3D UI<br/>(Tailwind + Framer)"]
-        AUTH["Clerk Auth<br/>(SSO / Email)"]
-        WS_CLIENT["Live Telemetry<br/>(WebSocket)"]
+    %% Styling
+    classDef user fill:#6366f1,stroke:#4f46e5,color:#fff,stroke-width:2px
+    classDef frontend fill:#0f172a,stroke:#38bdf8,color:#38bdf8,stroke-width:2px
+    classDef backend fill:#1e293b,stroke:#a855f7,color:#e9d5ff,stroke-width:2px
+    classDef db fill:#020617,stroke:#10b981,color:#a7f3d0,stroke-width:2px
+    classDef ai fill:#020617,stroke:#f59e0b,color:#fde68a,stroke-width:2px
+    classDef ext fill:#020617,stroke:#64748b,color:#cbd5e1,stroke-width:2px
+
+    %% Nodes
+    USER((User)):::user
+    UI[Next.js Dashboard<br/>Uploads PDF/DOCX]:::frontend
+    
+    subgraph BACKEND ["FastAPI Engine"]
+        API[POST /upload<br/>Accepts File & JD]:::backend
+        
+        subgraph P1 ["Phase 1: Dual-Engine Parser & Pre-Flight"]
+            HASH[Generate SHA-256 Hash]:::backend
+            EXTRACT_P[PyMuPDF<br/>Structural Layout]:::backend
+            EXTRACT_PL[PDFPlumber<br/>Digital Text/Links]:::backend
+            OCR{Sparse Text?<br/>< 200 chars}:::backend
+            TESSERACT[Tesseract OCR @200DPI<br/>Background Thread]:::backend
+        end
+        
+        subgraph P2 ["Phase 2: Security & Forensic Scan"]
+            HIDDEN[Invisible Font Scanner<br/>Cross-ref raw vs visual]:::backend
+            DUP[Duplicate Check<br/>Cosine Similarity]:::backend
+            INJECT[LLM Prompt<br/>Injection Firewall]:::ai
+        end
+
+        subgraph P3 ["Phase 3: Neural Analysis (8x Parallel)"]
+            T1[Career Details<br/>Internships/Projects]:::ai
+            T2[Personal Info<br/>Name/Location]:::ai
+            T3[Hireability<br/>Executive Summary]:::ai
+            T4[Interview Pilot<br/>10 Custom Questions]:::ai
+            T5[Culture Fit<br/>Behavioral Match]:::ai
+            T6[Upsell<br/>Course Recommendations]:::ai
+            T7[Parse Social links]:::backend
+            GH[GitHub API<br/>Live Verification]:::ext
+        end
+
+        subgraph P4 ["Phase 4: Deterministic Scoring System"]
+            BASE[Calculate 12-Factor Base Score]:::backend
+            MULTI[Apply Tier-1 Multipliers]:::backend
+            TRUST[Calculate Validated Trust Score]:::backend
+        end
+        
+        DB[(SQLite DB<br/>JSON Blob & Stats)]:::db
+        WS((WebSocket<br/>Live Broadcast)):::frontend
     end
 
-    subgraph BACKEND ["⚙️ FastAPI Core Engine"]
-        API["REST API"]
-        WSB["Live Broadcaster"]
-        SEM["Parallel AI Orchestrator"]
-    end
-
-    subgraph PIPELINE ["🔬 The 8-Phase Forensic Pipeline"]
-        direction TB
-        P1["1. Dual-Engine PDF Extraction"]
-        P2["2. Visual OCR Fallback"]
-        P3["3. Hidden Text Detection"]
-        P4["4. 7-Layer AI Security Firewall"]
-        P5["5. 12-Factor Structural Extraction"]
-        P6["6. Parallel Neural Analysis"]
-        P7["7. Deterministic Scoring"]
-        P8["8. Live Signal Dispatch"]
-    end
-
-    subgraph SERVICES ["🌐 Intelligence Layer"]
-        GROQ["Groq (LLaMA 3.1)"]
-        GITHUB["GitHub API"]
-        DB[("Live SQLite")]
-    end
-
-    UI --> API
-    API --> PIPELINE
-    P1 --> P2
-    P2 --> P3
-    P3 --> P4
-    P4 --> P5
-    P5 --> P6
-    P6 --> GROQ
-    P6 --> GITHUB
-    P6 --> P7
-    P7 --> P8
-    P8 --> DB
-    P8 --> WSB
-    WSB --> WS_CLIENT
-    WS_CLIENT --> UI
+    %% Flow Details
+    USER -->|Uploads Resume| UI
+    UI -->|Sends File| API
+    API --> HASH
+    
+    HASH --> EXTRACT_P
+    HASH --> EXTRACT_PL
+    EXTRACT_P & EXTRACT_PL --> OCR
+    OCR -->|Yes| TESSERACT
+    OCR -->|No| P2
+    TESSERACT --> P2
+    
+    P2 --> HIDDEN
+    HIDDEN --> DUP
+    DUP --> INJECT
+    INJECT -->|Blocked| DB
+    INJECT -->|Cleared| P3
+    
+    P3 --> T1 & T2 & T3 & T4 & T5 & T6 & T7
+    T7 --> |Extracted Username| GH
+    
+    T1 & T2 & T3 & T4 & T5 & T6 & GH --> P4
+    P4 --> BASE
+    BASE --> MULTI
+    MULTI --> TRUST
+    
+    TRUST --> DB
+    DB --> WS
+    WS -->|COMPLETE_JSON| UI
 ```
 
 ---

@@ -1424,6 +1424,10 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
                     extracted["structured_data"]["projects"]["titles"] = career_details["projects"]
                 if career_details.get("experience"):
                     extracted["structured_data"]["experience"]["details"] = career_details["experience"]
+                if career_details.get("hackathons"):
+                    if "hackathons" not in extracted["structured_data"]:
+                        extracted["structured_data"]["hackathons"] = {}
+                    extracted["structured_data"]["hackathons"]["details"] = career_details["hackathons"]
             
         except Exception as analysis_e:
             await manager.broadcast(f"> ERROR: Analysis failure: {str(analysis_e)}")
@@ -2009,17 +2013,18 @@ Resume first 1500 chars:
 
 async def extract_career_details_llm(text: str) -> dict:
     """Uses LLM to extract clean, readable details for internships and projects."""
-    if not groq_client: return {"internships": [], "projects": []}
+    if not groq_client: return {"internships": [], "projects": [], "experience": [], "hackathons": []}
     try:
         prompt = f"""Extract the career and project details from this resume.
 
 RULES:
 - Return ONLY a JSON object with this exact structure:
-  {{"internships": ["Role at Company (Date): 1-sentence description"], "projects": ["Project Name (Link if available): 1-sentence description"], "experience": ["Role at Company (Date): 1-sentence description"]}}
+  {{"internships": ["Role at Company (Date): 1-sentence description"], "projects": ["Project Name (Link if available): 1-sentence description"], "experience": ["Role at Company (Date): 1-sentence description"], "hackathons": ["Hackathon/Competition Name (Date): 1-sentence description"]}}
 - Be concise.
-- If there are no internships, projects, or experience, return empty arrays.
+- If there are no entries for a category, return empty arrays.
 - Limit to the top 5 most relevant entries for each.
-- CRITICAL: DO NOT list Hackathons, Competitions, or personal projects under "internships". Internships must be actual work experience at a company.
+- CRITICAL: DO NOT list Hackathons, Competitions, LeetCode, Open Source, or personal projects under "internships". Internships must be actual employed work experience at a company.
+- Put all hackathons, competitive programming platforms, and open-source competitions ONLY in the "hackathons" array.
 
 Resume excerpt:
 {text[:4000]}"""
@@ -2035,11 +2040,12 @@ Resume excerpt:
         return {
             "internships": parsed.get("internships", []),
             "projects": parsed.get("projects", []),
-            "experience": parsed.get("experience", [])
+            "experience": parsed.get("experience", []),
+            "hackathons": parsed.get("hackathons", [])
         }
     except Exception as e:
         print(f"Error in career details LLM: {e}")
-        return {"internships": [], "projects": []}
+        return {"internships": [], "projects": [], "experience": [], "hackathons": []}
 
 def extract_personal_info_fallback(text):
     """

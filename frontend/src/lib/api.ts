@@ -52,6 +52,7 @@ export interface Candidate {
     experience?: { years?: number; count?: number; details?: string[] };
     extracurricular_count?: number;
     hackathon_count?: number;
+    hackathons?: { count?: number; details?: string[] };
     online_links?: { github?: boolean; linkedin?: boolean; portfolio?: boolean };
     github_username?: string;
     skill_domains?: Record<string, string[]>;

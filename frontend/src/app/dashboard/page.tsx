@@ -1385,15 +1385,26 @@ export default function DashboardPage() {
                             )}
 
                             {/* Hackathons */}
-                            {(selected.structured_data.hackathon_count || 0) > 0 && (
+                            {((selected.structured_data.hackathons?.details && selected.structured_data.hackathons.details.length > 0) || (selected.structured_data.hackathon_count || 0) > 0) && (
                               <div className="space-y-2">
                                 <div className="flex items-center gap-2 mb-2">
                                   <div className="w-1.5 h-1.5 rounded-full bg-fuchsia-400" />
                                   <span className="text-[10px] font-black text-fuchsia-400 uppercase tracking-widest">Hackathons & Competitive Coding</span>
                                 </div>
-                                <p className="ml-4 text-[10px] text-white/60 bg-white/[0.02] border border-white/5 rounded-lg p-3">
-                                  <span className="font-bold text-fuchsia-400">{selected.structured_data.hackathon_count}</span> competitive coding / hackathon platforms detected
-                                </p>
+                                {selected.structured_data.hackathons?.details && selected.structured_data.hackathons.details.length > 0 ? (
+                                  <div className="ml-4 space-y-1.5">
+                                    {selected.structured_data.hackathons.details.map((h, i) => (
+                                      <div key={i} className="flex items-start gap-2 text-[10px] text-white/60 bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                                        <span className="text-fuchsia-400 font-black shrink-0">❖</span>
+                                        <span className="leading-relaxed font-medium">{h}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="ml-4 text-[10px] text-white/60 bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                                    <span className="font-bold text-fuchsia-400">{selected.structured_data.hackathon_count}</span> competitive coding / hackathon platforms detected
+                                  </p>
+                                )}
                               </div>
                             )}
 
