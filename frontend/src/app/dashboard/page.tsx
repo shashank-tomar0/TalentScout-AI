@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useUser, useClerk } from "@clerk/nextjs";
-import { Loader2, FileText, Upload, Users, Search, Brain, CheckCircle2, AlertTriangle, ChevronRight, X, Mail, Github, ExternalLink, Activity, Zap, Sparkles, LogOut, Send, Copy, Check, MessageSquare, Wand2, Settings2, Trash2, FileCheck2, ShieldAlert, Cpu, Award, Target, BookOpen, ArrowRight, Filter, History, Scan, Shield, TrendingUp, BarChart3, Download, Info, ChevronUp, ChevronDown, Eye, EyeOff, Share2 } from "lucide-react";
+import { Loader2, FileText, Upload, Users, Search, Brain, CheckCircle2, AlertTriangle, ChevronRight, X, Mail, Github, ExternalLink, Activity, Zap, Sparkles, LogOut, Send, Copy, Check, MessageSquare, Wand2, Settings2, Trash2, FileCheck2, ShieldAlert, Cpu, Award, Target, BookOpen, ArrowRight, Filter, History, Scan, Shield, TrendingUp, BarChart3, Download, Info, ChevronUp, ChevronDown, Eye, EyeOff, Share2, Code2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from 'react-markdown';
 import {
@@ -82,6 +82,7 @@ export default function DashboardPage() {
   const [jdPromptText, setJdPromptText] = useState("");
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [showWeights, setShowWeights] = useState(false);
+  const [showRawData, setShowRawData] = useState(false);
   const [customWeights, setCustomWeights] = useState<Record<string, number>>({
     internships: 20, skills: 20, projects: 15, cgpa: 10,
     achievements: 10, experience: 5, extra_curricular: 5,
@@ -1106,14 +1107,27 @@ export default function DashboardPage() {
                       </div>
                     </div>
 
-                    {selected.interview_questions && (
+                    {selected.interview_questions && selected.interview_questions.length > 0 ? (
                       <div className="space-y-4">
-                        <p className="text-[11px] font-black text-[var(--cyan)] uppercase tracking-[0.3em]">Screening Focus</p>
+                        <div className="flex items-center justify-between">
+                          <p className="text-[11px] font-black text-[var(--cyan)] uppercase tracking-[0.3em]">Screening Focus</p>
+                          <button onClick={startInterviewPilot} title="Regenerate with Interview Pilot" className="p-1.5 rounded-lg border border-[var(--cyan)]/20 hover:bg-[var(--cyan)]/10 text-[var(--cyan)] transition-colors">
+                            <Brain className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                         <div className="grid grid-cols-1 gap-3">
-                          {selected.interview_questions!.slice(0, 5).map((q, idx) => (
+                          {selected.interview_questions.slice(0, 5).map((q, idx) => (
                             <div key={idx} className="bg-white/5 border border-white/10 p-4 rounded-xl text-xs text-white/80 italic leading-relaxed">"{q}"</div>
                           ))}
                         </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <p className="text-[11px] font-black text-[var(--cyan)] uppercase tracking-[0.3em]">Screening Focus</p>
+                        <button onClick={startInterviewPilot} className="w-full bg-white/5 border border-dashed border-[var(--cyan)]/30 hover:border-[var(--cyan)]/80 hover:bg-[var(--cyan)]/10 text-[var(--cyan)] p-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.1)] group">
+                           <Brain className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                           GENERATE AI SCREENING FOCUS
+                        </button>
                       </div>
                     )}
 
@@ -1169,10 +1183,22 @@ export default function DashboardPage() {
                       <div className="space-y-4">
                         <div className="bg-black/40 border border-white/5 p-8 rounded-2xl relative overflow-hidden">
                           <div className="absolute top-0 left-0 w-1.5 h-full bg-gradient-to-b from-[var(--emerald)] via-[var(--cyan)] to-[var(--violet)]" />
-                          <p className="text-[11px] font-black text-[var(--muted)] uppercase tracking-[0.3em] mb-6 flex items-center gap-3">
-                            <FileText className="w-4 h-4 text-[var(--emerald)]" /> Structured Data Extraction
-                          </p>
-                          <div className="space-y-5">
+                          <div className="flex items-center justify-between mb-6">
+                            <p className="text-[11px] font-black text-[var(--muted)] uppercase tracking-[0.3em] flex items-center gap-3">
+                              <FileText className="w-4 h-4 text-[var(--emerald)]" /> Structured Data Extraction
+                            </p>
+                            <button onClick={() => setShowRawData(!showRawData)} className={`text-[9px] font-bold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${showRawData ? 'text-[var(--emerald)] border-[var(--emerald)]/30 bg-[var(--emerald)]/10' : 'text-[var(--muted)] hover:text-white bg-white/5 border-white/10 hover:border-white/20'}`}>
+                              <Code2 className="w-3.5 h-3.5" /> {showRawData ? 'UI VIEW' : 'RAW JSON'}
+                            </button>
+                          </div>
+                          {showRawData ? (
+                            <div className="bg-black/80 rounded-xl p-4 overflow-x-auto border border-white/5 no-scrollbar max-h-[600px] overflow-y-auto w-full">
+                              <pre className="text-[10px] text-[var(--emerald)] font-mono leading-relaxed pb-4 w-full whitespace-pre-wrap break-all">
+                                {JSON.stringify(selected.structured_data, null, 2)}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div className="space-y-5">
 
                             {/* Education */}
                             {selected.structured_data.education && (
@@ -1451,6 +1477,7 @@ export default function DashboardPage() {
                             )}
 
                           </div>
+                          )}
                         </div>
                       </div>
                     )}

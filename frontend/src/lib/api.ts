@@ -75,8 +75,8 @@ export async function deleteCandidates(userId: string): Promise<any> {
     });
     if (!res.ok) throw new Error("Failed to delete from server");
     return res.json();
-  } catch (err) {
-    console.error("Purge Error:", err);
+  } catch (err: any) {
+    console.warn("Purge Warning:", err.message);
     throw err;
   }
 }

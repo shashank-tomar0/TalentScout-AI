@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import fitz  # PyMuPDF — required for PDF rendering, OCR fallback, and locked PDF detection
 import pdfplumber
 import re
-import difflib
+
 import asyncio
 import json
 from typing import List, Optional, Dict
@@ -46,13 +46,26 @@ DB_NAME = "talentscout.db"
 
 # Global AI Concurrency Control
 # Groq 8b-instant free tier handles short bursts well. 8 concurrent workers + exponential backoff.
-ai_semaphore = asyncio.Semaphore(8)
+import time
+ai_semaphore = asyncio.Semaphore(2)
+API_RATE_LIMITED_UNTIL = 0.0
 
-async def call_groq_with_retry(prompt: str, system_prompt: str = "You output only valid JSON objects.", model: str = "llama-3.1-8b-instant", response_format: dict = {"type": "json_object"}, temperature: float = 0.3, max_tokens: int = 500, max_retries: int = 10):
-    """Wait for semaphore, call Groq, and retry with backoff on 429."""
+async def call_groq_with_retry(prompt: str, system_prompt: str = "You output only valid JSON objects.", model: str = "llama-3.1-8b-instant", response_format: dict = {"type": "json_object"}, temperature: float = 0.3, max_tokens: int = 500, max_retries: int = 2):
+    """Wait for semaphore, call Groq, and retry short delays on 429 before failing over to fallbacks."""
+    global API_RATE_LIMITED_UNTIL
+    
     if not groq_client: return None
     
+    if time.time() < API_RATE_LIMITED_UNTIL:
+        return None  # Circuit breaker active, instantly fail to fallback
+    
+    # GLOBAL OVERRIDE to prevent 429 rate limits on free-tier keys
+    model = "llama-3.1-8b-instant"
+    
     async with ai_semaphore:
+        if time.time() < API_RATE_LIMITED_UNTIL:
+            return None  # Re-check inside lock for tasks that were sleeping
+            
         for attempt in range(max_retries):
             try:
                 # ALWAYS ensure 'json' is explicitly in system message when JSON mode is active
@@ -82,11 +95,14 @@ async def call_groq_with_retry(prompt: str, system_prompt: str = "You output onl
                 if "400" in err_str or "invalid_request" in err_str:
                     print(f"> Groq API 400 Error (no retry): {str(e)[:200]}")
                     raise e
-                elif ("429" in err_str or "rate_limit" in err_str) and attempt < max_retries - 1:
-                    import random
-                    wait_time = (2 ** (attempt + 1)) + random.uniform(0, 1)
-                    print(f"> Groq Rate Limit (429): Holding queued requests for {wait_time:.1f}s... (Attempt {attempt+1}/{max_retries})")
-                    await asyncio.sleep(wait_time)
+                elif ("429" in err_str or "rate_limit" in err_str):
+                    if attempt < max_retries - 1:
+                        print(f"> Groq Rate Limit (429): Retrying in 2.0s... (Attempt {attempt+1}/{max_retries})")
+                        await asyncio.sleep(2.0)
+                    else:
+                        print(f"> Groq API exhausted. CIRCUIT BREAKER TRIPPED for 30 seconds! ({str(e)[:100]})")
+                        API_RATE_LIMITED_UNTIL = time.time() + 30.0
+                        return None
                 elif ("500" in err_str or "503" in err_str or "timeout" in err_str or "connection" in err_str) and attempt < max_retries - 1:
                     print(f"> Groq API Connection/Timeout Error: Retrying in 2s...")
                     await asyncio.sleep(2)
@@ -95,8 +111,8 @@ async def call_groq_with_retry(prompt: str, system_prompt: str = "You output onl
                         print(f"> Groq API Error {type(e).__name__}: Retrying in 2s...")
                         await asyncio.sleep(2)
                     else:
-                        print(f"> Groq API Fatal Error after {max_retries} attempts: {str(e)[:200]}")
-                        raise e
+                        print(f"> Groq API exhausted after {max_retries} attempts, triggering fallback. ({str(e)[:100]})")
+                        return None
     return None
 
 def init_db():
@@ -142,7 +158,7 @@ def init_db():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -355,18 +371,45 @@ def calculate_candidate_score(extracted, full_text, jd_text="", custom_weights=N
     # ── Calculate raw percentage earned per criterion ──
     # Each criterion: compute percentage earned (0.0-1.0), then multiply by its weight
 
-    # 1. Internships
+    # 1. Internships (with HR Mentor's Padding Penalty)
     internships = extracted.get('internship_count', 0)
-    pct_intern = min(internships / 2.0, 1.0)  # 2 internships = 100%
+    internship_details = extracted.get('structured_data', {}).get('internships', {}).get('details', []) if extracted.get('structured_data') else []
+    # Padding penalty: 4+ internships averaging <1.5 months each = resume stuffing → 0 score
+    if internships >= 4 and len(internship_details) >= 4:
+        avg_detail_len = sum(len(d) for d in internship_details) / max(len(internship_details), 1)
+        if avg_detail_len < 20:  # Very short entries = likely padding
+            pct_intern = 0.0
+        else:
+            pct_intern = min(internships / 2.0, 1.0)
+    else:
+        # Saturation curve (from SAH): 0→0, 1→0.5, 2→0.8, 3+→1.0
+        if internships == 0:
+            pct_intern = 0.0
+        elif internships == 1:
+            pct_intern = 0.5
+        elif internships == 2:
+            pct_intern = 0.8
+        else:
+            pct_intern = 1.0
 
-    # 2. Technical Skills
+    # 2. Technical Skills (Expert/Partial + SpaCy NLP + Advanced Domain Bonus)
     skills_list = extracted.get('skills', [])
     partial_skills_list = extracted.get('partial_skills', [])
     all_skills = extracted.get('all_skills', skills_list + partial_skills_list)
     
     # Partial skills give 0.5 credit
     total_skill_points = len(skills_list) + (len(partial_skills_list) * 0.5)
-    base_skill_pct = min(total_skill_points / 20.0, 0.5)  # 20 points = 50% base
+    # Base: min(total, 10) out of 10 (like SAH)
+    base_count_pct = min(total_skill_points, 10) / 20.0  # 10 skills = 50% base
+    
+    # Advanced domain bonus (Cloud/DevOps/Data/Security skills get extra pool)
+    advanced_domains = ['cloud & devops', 'data engineering', 'cybersecurity', 'ai & machine learning']
+    sd = extracted.get('structured_data', {})
+    skill_domains = sd.get('skill_domains', {}) if sd else {}
+    advanced_skill_count = sum(len(skill_domains.get(d, [])) for d in skill_domains if d.lower() in advanced_domains)
+    advanced_bonus = min(advanced_skill_count, 10) / 20.0  # max 50% from advanced
+    
+    base_skill_pct = min(base_count_pct + advanced_bonus, 0.5)
     
     jd_bonus_pct = 0.0
     if analysis["jd_present"] and nlp:
@@ -386,26 +429,84 @@ def calculate_candidate_score(extracted, full_text, jd_text="", custom_weights=N
             jd_bonus_pct = min((len(matches) / len(jd_keywords)) * 0.5, 0.5)
     pct_skills = min(base_skill_pct + jd_bonus_pct, 1.0)
 
-    # 3. Projects
+    # 3. Projects (Quality-Based: base + advanced_tech + impact + URL bonus)
     projects = extracted.get('project_count', 0)
-    pct_proj = min(projects / 3.0, 1.0)  # 3 projects = 100%
+    text_lower_for_proj = full_text.lower()
+    # Base saturation curve
+    if projects == 0:
+        proj_base = 0.0
+    elif projects == 1:
+        proj_base = 5.0
+    elif projects <= 3:
+        proj_base = 10.0
+    else:
+        proj_base = 12.0
+    # Advanced tech bonus: +2 max for advanced keywords in project descriptions
+    advanced_proj_keywords = ['machine learning', 'deep learning', 'kubernetes', 'docker', 'microservice',
+                              'distributed', 'blockchain', 'neural network', 'cloud', 'aws', 'gcp', 'terraform',
+                              'ci/cd', 'scalable', 'real-time', 'api gateway', 'event-driven']
+    adv_proj_hits = sum(1 for kw in advanced_proj_keywords if kw in text_lower_for_proj)
+    advanced_bonus_proj = min(adv_proj_hits, 2)
+    # Impact bonus: +3 max for quantified results in projects
+    impact_keywords = re.findall(r'(?:reduced|increased|improved|optimized|achieved|saved|processed|handled|served)\s+(?:by\s+)?\d+', text_lower_for_proj)
+    impact_bonus_proj = min(len(impact_keywords), 3)
+    # URL/demo bonus: +1 if project has live link
+    has_proj_urls = bool(re.search(r'(?:github\.com|herokuapp|vercel|netlify|demo|deployed)', text_lower_for_proj))
+    url_bonus_proj = 1 if has_proj_urls else 0
+    proj_total = min(proj_base + advanced_bonus_proj + impact_bonus_proj + url_bonus_proj, 15.0)
+    pct_proj = proj_total / 15.0
 
-    # 4. CGPA
+    # 4. CGPA (Bracket-based like SAH for more granularity)
     cgpa = extracted.get('cgpa', 0.0)
+    # Normalize to 100-scale first
     if 0 < cgpa <= 4.0:
-        pct_cgpa = min(cgpa / 4.0, 1.0)
+        cgpa_pct = (cgpa / 4.0) * 100
     elif 0 < cgpa <= 10.0:
-        pct_cgpa = min(cgpa / 10.0, 1.0)
+        cgpa_pct = (cgpa / 10.0) * 100
+    else:
+        cgpa_pct = 0.0
+    # Bracket scoring
+    if cgpa_pct >= 90:
+        pct_cgpa = 1.0
+    elif cgpa_pct >= 80:
+        pct_cgpa = 0.8
+    elif cgpa_pct >= 70:
+        pct_cgpa = 0.6
+    elif cgpa_pct >= 60:
+        pct_cgpa = 0.4
+    elif cgpa_pct > 0:
+        pct_cgpa = 0.2
     else:
         pct_cgpa = 0.0
 
-    # 5. Achievements
+    # 5. Achievements (Impact-Based scoring, not just counting)
     achievements = extracted.get('achievement_count', 0)
-    pct_ach = min(achievements / 5.0, 1.0)
+    # Impact detection: quantified achievements get more credit
+    quant_ach = len(re.findall(
+        r'(?:won|awarded|ranked|placed|secured)\s+(?:\w+\s+){0,3}(?:\d+|first|second|third|1st|2nd|3rd)',
+        full_text.lower()
+    ))
+    # Publications and patents are high-impact
+    pub_count = len(extracted.get('structured_data', {}).get('publications', [])) if extracted.get('structured_data') else 0
+    impact_score = min(achievements + quant_ach + (pub_count * 2), 10)
+    pct_ach = impact_score / 10.0
 
-    # 6. Experience
-    pts_exp_raw = min(exp_years * 1.0, 5.0)
-    pct_exp = pts_exp_raw / 5.0 if not is_fresher else min(exp_years / 2.0, 1.0)
+    # 6. Experience (with Job-Hopper Penalty)
+    experience_count = extracted.get('experience_count', 0)
+    # Detect short stints: date ranges < 6 months (rough heuristic via experience count vs years)
+    job_hopper_penalty = 0
+    if experience_count >= 3 and exp_years > 0:
+        avg_tenure_months = (exp_years * 12) / experience_count
+        if avg_tenure_months < 6:  # Average less than 6 months per role
+            job_hopper_penalty = 2  # Penalty points
+    
+    if not is_fresher:
+        exp_base = min(exp_years, 5.0)
+    else:
+        exp_base = min(exp_years * 2.5, 5.0)  # Fresher scale
+    
+    exp_after_penalty = max(0, exp_base - job_hopper_penalty)
+    pct_exp = exp_after_penalty / 5.0
 
     # 7. Extra-Curricular
     extra = extracted.get('extra_count', 0)
@@ -423,13 +524,36 @@ def calculate_candidate_score(extracted, full_text, jd_text="", custom_weights=N
     langs = extracted.get('language_count', 0)
     pct_lang = min(langs / 3.0, 1.0)
 
-    # 11. College Tier
+    # 11. College Tier (4-tier granular system)
     college_raw = float(extracted.get('college_tier_score', 0))
-    pct_college = college_raw / 2.0
+    # 4-tier: Tier-1=2.0, Tier-2=1.5, Tier-3(any college detected)=1.0, None=0.5
+    if college_raw >= 2:
+        pct_college = 1.0      # Tier 1
+    elif college_raw >= 1:
+        pct_college = 0.75     # Tier 2
+    elif college_raw > 0:
+        pct_college = 0.5      # Tier 3
+    else:
+        pct_college = 0.25     # Unknown/No college
 
-    # 12. School Marks
+    # 12. School Marks (Granular brackets instead of binary)
     school_raw = float(extracted.get('school_marks_score', 0))
-    pct_school = school_raw / 2.0
+    # Use the raw school marks average if available
+    school_marks_list = extracted.get('school_marks_val', [])
+    if school_marks_list and len(school_marks_list) > 0:
+        avg_school = sum(school_marks_list) / len(school_marks_list)
+        if avg_school >= 90:
+            pct_school = 1.0
+        elif avg_school >= 80:
+            pct_school = 0.75
+        elif avg_school >= 70:
+            pct_school = 0.5
+        else:
+            pct_school = 0.25
+    elif school_raw > 0:
+        pct_school = school_raw / 2.0
+    else:
+        pct_school = 0.0
 
     # ── Apply weights ──
     earned = {
@@ -449,18 +573,18 @@ def calculate_candidate_score(extracted, full_text, jd_text="", custom_weights=N
 
     # ── Build breakdown ──
     detail_map = {
-        "internships": f"{internships} detected",
-        "skills": f"{len(skills_list)} expert, {len(partial_skills_list)} partial + JD match",
-        "projects": f"{projects} detected",
-        "cgpa": f"CGPA {cgpa}",
-        "achievements": f"{achievements} detected",
-        "experience": f"{exp_years} yrs {'(fresher)' if is_fresher else '(experienced)'}",
+        "internships": f"{internships} detected" + (" ⚠️ padding penalty" if internships >= 4 and pct_intern == 0.0 else ""),
+        "skills": f"{len(skills_list)} expert, {len(partial_skills_list)} partial, {advanced_skill_count} advanced + JD",
+        "projects": f"{projects} proj, +{advanced_bonus_proj} adv, +{impact_bonus_proj} impact, +{url_bonus_proj} url",
+        "cgpa": f"CGPA {cgpa} ({cgpa_pct:.0f}%)",
+        "achievements": f"impact:{impact_score}/10 (quant:{quant_ach}, pub:{pub_count})",
+        "experience": f"{exp_years} yrs {'(fresher)' if is_fresher else '(experienced)'}" + (f" ⚠️ hopper-{job_hopper_penalty}" if job_hopper_penalty > 0 else ""),
         "extra_curricular": f"{extra} activities",
         "degree": "Postgrad" if degree_raw==3 else "Undergrad" if degree_raw==2 else "Diploma",
         "online_presence": f"{links} profiles",
         "languages": f"{langs} languages",
-        "college_rank": "Tier 1" if college_raw==2 else "Tier 2" if college_raw==1 else "Other",
-        "school_marks": "Analyzed"
+        "college_rank": "Tier 1" if college_raw>=2 else "Tier 2" if college_raw>=1 else "Tier 3" if college_raw>0 else "Unranked",
+        "school_marks": f"avg {avg_school:.0f}%" if (school_marks_list and len(school_marks_list) > 0) else "Not found"
     }
     for key in earned:
         breakdown[key] = {
@@ -765,7 +889,7 @@ async def generate_upsell_recommendations(missing_skills: list, matched_skills: 
             
             Formatting: Return ONLY a valid JSON array of 2 strings.
             """
-        content = await call_groq_with_retry(prompt, model="mixtral-8x7b-32768", system_prompt="You are an expert Career Coach that ONLY outputs raw valid JSON arrays of strings.", temperature=0.5, max_tokens=250)
+        content = await call_groq_with_retry(prompt, model="llama-3.3-70b-versatile", system_prompt="You are an expert Career Coach that ONLY outputs raw valid JSON arrays of strings.", temperature=0.5, max_tokens=250)
         if not content: return ["Advanced System Architecture Masterclass", "Leadership in Tech Program"]
         
         import json
@@ -837,7 +961,7 @@ async def generate_trust_score(text: str, github_stats: dict) -> dict:
             "reasoning": "Specific, forensic analysis citing resume data and github metrics."
         }}
         """
-        content = await call_groq_with_retry(prompt, model="mixtral-8x7b-32768", system_prompt="You output only valid JSON objects. Be forensic and specific.", temperature=0.2, max_tokens=250)
+        content = await call_groq_with_retry(prompt, model="llama-3.3-70b-versatile", system_prompt="You output only valid JSON objects. Be forensic and specific.", temperature=0.2, max_tokens=250)
         if not content: return {"score": fallback_score, "reasoning": fallback_reasoning}
         
         parsed = json.loads(content)
@@ -1140,7 +1264,7 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
                                         res["fraud_flags"].append("invisible_text")
                                     continue
 
-                                if span.get("size", 10) < 4.0:
+                                if span.get("size", 10) < 1.5:  # Changed from 4.0 to 1.5 to allow 3pt footers
                                     if "microscopic_text" not in res["fraud_flags"]:
                                         res["fraud_flags"].append("microscopic_text")
                                     continue
@@ -1285,6 +1409,27 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
             full_text = "\n".join([p.text for p in doc.paragraphs])
         elif filename.lower().endswith(".txt"):
             full_text = file_content.decode("utf-8")
+        elif filename.lower().endswith('.zip'):
+            import zipfile
+            import io
+            await manager.broadcast(f"> [SYSTEM] Extracting ZIP package: {filename}")
+            try:
+                with zipfile.ZipFile(io.BytesIO(file_content)) as z:
+                    # Get all files except directories and system files
+                    valid_files = [f for f in z.namelist() if f.lower().endswith(('.pdf', '.docx', '.doc')) and not f.startswith('__MACOSX')]
+                    await manager.broadcast(f"> [SYSTEM] Found {len(valid_files)} candidates in archive.")
+                    
+                    for zip_fn in valid_files:
+                        with z.open(zip_fn) as f:
+                            inner_content = f.read()
+                            # Recursively call for each file (though we use a simpler approach here)
+                            # To avoid deep recursion issues, we can extract the processing to a helper
+                            # but for now, we'll just process them sequentially in this task.
+                            await process_resume_task(inner_content, zip_fn, jd_text, company_values, user_id, custom_weights, use_cache)
+                return
+            except Exception as zip_e:
+                await manager.broadcast(f"> ERROR: ZIP Extraction failed: {str(zip_e)}")
+                return
         else:
              await manager.broadcast(f"> ERROR: Unsupported format {filename}")
              return
@@ -1306,6 +1451,7 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
     
     # Duplicate/Plagiarism Detection (Threaded to prevent blocking)
     def check_duplicates_threaded(text_to_check, history, current_hash, user_id_val):
+        """Only flags plagiarism if the >90% match comes from a DIFFERENT user."""
         import math
         from collections import Counter
         def get_cosine_sim(vec1, vec2):
@@ -1313,35 +1459,36 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
             numerator = sum([vec1[x] * vec2[x] for x in intersection])
             sum1 = sum([vec1[x] ** 2 for x in list(vec1.keys())])
             sum2 = sum([vec2[x] ** 2 for x in list(vec2.keys())])
-            denominator = math.sqrt(sum1) * math.sqrt(sum2)
-            if not denominator: return 0.0
-            return float(numerator) / denominator
+            if sum1 == 0 or sum2 == 0: return 0.0
+            return float(numerator) / (math.sqrt(sum1) * math.sqrt(sum2))
 
-        # 1. DB Persistence Check (Search for this hash in candidates table)
-        try:
-            conn = sqlite3.connect(DB_NAME, timeout=10)
-            c = conn.cursor()
-            c.execute("SELECT file_hash FROM candidates WHERE file_hash=? AND user_id=? LIMIT 1", (current_hash, user_id_val))
-            res = c.fetchone()
-            conn.close()
-            if res:
-                return current_hash # Found in DB
-        except: pass
+        # 1. We no longer check DB for exact user matches as "malicious" 
+        # because users re-uploading their own resume is normal behavior.
+        # It's only malicious if ANOTHER user plagiarized it.
 
-        # 2. In-memory / Semantic Check
+        # 2. In-memory / Semantic Check against OTHER users
         words_current = re.findall(r'\w+', text_to_check.lower())
         if not words_current: return None
         vec_current = Counter(words_current)
         len_current = len(words_current)
 
-        for prev_hash, prev_text in history.items():
+        for prev_hash, data in history.items():
+            prev_user = data.get("user")
+            prev_text = data.get("text", "")
+            
+            # Skip checking against yourself
+            if prev_user == user_id_val:
+                continue
+                
+            # If it's a different user and exact hash match -> Plagiarism!
             if prev_hash == current_hash: 
-                return prev_hash # EXACT match in history
+                return prev_hash
             
             # Fast length-ratio heuristic
             words_prev = re.findall(r'\w+', prev_text.lower())
             len_prev = len(words_prev)
             if not len_prev: continue
+            
             ratio = min(len_current, len_prev) / max(len_current, len_prev)
             if ratio < 0.5: continue
 
@@ -1358,8 +1505,8 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
         is_duplicate = True
         await manager.broadcast(f"> 🚨 DUPLICATE_ALERT: >90% match with previous upload (hash: {dup_hash[:8]})")
                 
-    # Save to history for future comparisons
-    RESUME_HISTORY[file_hash] = full_text
+    # Save to history for future comparisons (now tracking user_id to prevent false alarms)
+    RESUME_HISTORY[file_hash] = {"user": user_id, "text": full_text}
 
     if "ignore all previous" in full_text.lower() or "ignore the job description" in full_text.lower():
         is_malicious = True
@@ -1446,12 +1593,16 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
             early_gh = gh_match.group(1) if gh_match else None
 
             # LLM firewall + all AI tasks in one batch
+            # OPTIMIZED: We now skip Interview Questions and Upsell Recommendations during upload 
+            # to save 33% API budget. They can be fetched on demand later if the UI needs them.
+            async def get_empty_list(): return []
+            
             tasks = [
                 get_personal_github_trust_chain(early_gh),
                 generate_hireability_summary_llm(score, analysis, score_breakdown, jd_text, bool(jd_text)),
-                generate_interview_questions_llm(analysis, extracted.get('skills', []), bool(jd_text)),
+                get_empty_list(), # Was generate_interview_questions_llm
                 generate_soft_skills_llm(full_text, company_values),
-                generate_upsell_recommendations(analysis.get("missing", []), analysis.get("matches", []), company_values),
+                get_empty_list(), # Was generate_upsell_recommendations
                 check_prompt_injection(full_text),  # Run firewall in parallel too
                 extract_career_details_llm(full_text),
             ]
@@ -1514,16 +1665,25 @@ async def process_resume_task(file_content: bytes, filename: str, jd_text: str =
                 if clean_intern:
                     extracted["structured_data"]["internships"]["details"] = clean_intern
                 
-                if career_details.get("projects"):
-                    extracted["structured_data"]["projects"]["titles"] = career_details["projects"]
+                # MERGE logic: Only use LLM titles if they are non-empty, otherwise keep Regex results
+                llm_projects = career_details.get("projects", [])
+                if llm_projects and len(llm_projects) > 0:
+                    extracted["structured_data"]["projects"]["titles"] = llm_projects
                 
                 if clean_exp:
                     extracted["structured_data"]["experience"]["details"] = clean_exp
                 
                 if raw_hackathons:
-                    if "hackathons" not in extracted["structured_data"]:
-                        extracted["structured_data"]["hackathons"] = {}
-                    extracted["structured_data"]["hackathons"]["details"] = raw_hackathons
+                    if "hackathons" not in extracted["structured_data"] or not extracted["structured_data"]["hackathons"]:
+                        extracted["structured_data"]["hackathons"] = {"count": len(raw_hackathons), "details": []}
+                    
+                    # Merge regex and LLM hackathons: unique set
+                    current_hacks = extracted["structured_data"]["hackathons"].get("details", [])
+                    for rh in raw_hackathons:
+                        if rh.lower() not in [ch.lower() for ch in current_hacks]:
+                            current_hacks.append(rh)
+                    extracted["structured_data"]["hackathons"]["details"] = current_hacks
+                    extracted["structured_data"]["hackathons"]["count"] = max(extracted["structured_data"]["hackathons"].get("count", 0), len(current_hacks))
             
         except Exception as analysis_e:
             await manager.broadcast(f"> ERROR: Analysis failure: {str(analysis_e)}")
@@ -1955,13 +2115,16 @@ async def verify_github(username: str) -> bool:
     """Checks if a GitHub username exists via public API."""
     if not username: return False
     url = f"https://api.github.com/users/{username}"
-    try:
-        # Using a standard User-Agent to avoid blocks
-        req = urllib.request.Request(url, headers={'User-Agent': 'TalentScout-AI-Bot'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    def _fetch():
+        try:
+            # Using a standard User-Agent to avoid blocks
+            req = urllib.request.Request(url, headers={'User-Agent': 'TalentScout-AI-Bot'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+            
+    return await asyncio.to_thread(_fetch)
 
 
 async def extract_personal_info_llm(text: str) -> dict:
@@ -1993,7 +2156,7 @@ async def extract_personal_info_llm(text: str) -> dict:
         "hr", "human", "resources", "creative", "technical", "security",
         "experience", "education", "skills", "projects", "summary",
         "objective", "profile", "curriculum", "vitae", "resume", "contact",
-        "information", "phone", "email", "address", "representative",
+        "information", "phone", "email", "address", "representative", "github", "linkedin", "portfolio", "blog"
     }
     
     regex_name = ""
@@ -2029,7 +2192,7 @@ Resume first 1500 chars:
 {text[:1500]}"""
             content = await call_groq_with_retry(
                 prompt=prompt,
-                model="mixtral-8x7b-32768",
+                model="llama-3.3-70b-versatile",
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 max_tokens=250
@@ -2130,11 +2293,13 @@ Resume excerpt:
         
         content = await call_groq_with_retry(
             prompt=prompt,
-            model="mixtral-8x7b-32768",
+            model="llama-3.3-70b-versatile",
             temperature=0.0,
             response_format={"type": "json_object"},
             max_tokens=1500
         )
+        if content:
+            print(f"> [DEBUG] LLM Extraction result: {content[:200]}...")
         parsed = json.loads(content) if content else {}
         return {
             "internships": parsed.get("internships", []),
@@ -2195,7 +2360,8 @@ def extract_personal_info_fallback(text):
         "profile", "creative", "graphic", "product", "frontend", "backend", "full",
         "stack", "devops", "cloud", "network", "system", "web", "mobile", "software",
         "security", "technical", "writer", "operations", "financial", "business",
-        "hr", "human", "resources", "contact", "information", "phone", "email"
+        "hr", "human", "resources", "contact", "information", "phone", "email",
+        "github", "linkedin", "portfolio", "blog", "links"
     ]
 
     # Fallback: first non-empty line that looks like a name (Title Case, short)
@@ -2277,18 +2443,36 @@ def extract_structured_data(text):
     ))
     # Combine: unique mentions via regex + 1 if section header found
     internship_count = len(intern_patterns)
-    if has_intern_section and internship_count == 0:
-        internship_count = 1
+    internship_details = []
+    
+    if has_intern_section:
+        if internship_count == 0:
+            internship_count = 1
+        # Extract lines from internship section if we found one
+        text_lines = text.replace('\r\n', '\n').split('\n')
+        for li, line in enumerate(text_lines):
+            stripped = line.strip()
+            if re.search(r'(?:^|\n)\s*internship[s]?\s*[:\-–]?\s*$', stripped, re.IGNORECASE):
+                # Look at next 10 lines
+                for next_l in text_lines[li+1 : li+11]:
+                    nl_strip = next_l.strip()
+                    if not nl_strip: continue
+                    if any(kw in nl_strip.lower() for kw in ['education', 'skills', 'projects', 'achievements']): break
+                    if len(nl_strip) > 5 and not nl_strip.isupper():
+                        internship_details.append(nl_strip[:120])
+                break
+    
+    internship_count = max(internship_count, len(internship_details))
     internship_count = min(internship_count, 10)  # sanity cap
 
-    # Extract actual internship details (company + role lines near "intern" keyword)
-    internship_details = []
-    for i, line in enumerate(text.replace('\r\n', '\n').replace('\r', '\n').split('\n')):
-        stripped = line.strip()
-        if re.search(r'\bintern(?:ship)?\b', stripped, re.IGNORECASE) and len(stripped) > 10:
-            # Clean and add if it looks like a real detail line (not a section header)
-            if not re.match(r'^\s*internship[s]?\s*[:\-–]?\s*$', stripped, re.IGNORECASE):
-                internship_details.append(stripped[:120])
+    # Supplement with lines near "intern" keyword if we didn't get enough
+    if len(internship_details) < 2:
+        for i, line in enumerate(text.replace('\r\n', '\n').replace('\r', '\n').split('\n')):
+            stripped = line.strip()
+            if re.search(r'\bintern(?:ship)?\b', stripped, re.IGNORECASE) and len(stripped) > 10:
+                if stripped[:120] not in internship_details:
+                    internship_details.append(stripped[:120])
+    
     internship_details = internship_details[:5]  # cap at 5
 
     # ── 3. Projects ──────────────────────────────────────────────────────────
@@ -2301,12 +2485,12 @@ def extract_structured_data(text):
         re.IGNORECASE
     )
     PROJ_HEADER = re.compile(
-        r'^\s*(?:[\W_]*)(?:high[\s\-]*impact\s*|academic\s*|personal\s*|technical\s*|key\s*|notable\s*|major\s*)?projects?(?:[\W_]*)\s*$',
+        r'^\s*(?:[\W_]*)(?:high[\s\-]*impact\s*|academic\s*|personal\s*|featured\s*|technical\s*|key\s*|notable\s*|major\s*)?projects?(?:[\W_]*)?\s*[:\-–]?\s*$',
         re.IGNORECASE
     )
     # Secondary aggressive parser for OCR that strips all spaces (e.g. "High-ImpactProjects")
     PROJ_HEADER_NO_SPACE = re.compile(
-        r'high[\-]?impactprojects?',
+        r'(?:high[\-]?impact|personal|technical|academic|featured)projects?',
         re.IGNORECASE
     )
     text_lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
@@ -2519,7 +2703,15 @@ def extract_structured_data(text):
         r'\bhackathon[s]?\b', r'\bleetcode\b', r'\bcodeforces\b',
         r'\bcodechef\b', r'\bcompetitive programming\b', r'\bhackerearth\b', r'\bdevfolio\b'
     ]
-    hack_count = sum(1 for kw in hackathon_keywords if re.search(kw, text_lower))
+    # Also extract hackathon/competition names
+    hackathon_details = []
+    for line in text_lines[:200]: # Look in first 200 lines
+        stripped = line.strip()
+        if any(kw in stripped.lower() for kw in ['hackathon', 'leetcode', 'codeforces', 'codechef', 'kaggle', 'icpc']) and len(stripped) > 5:
+            if not any(kw in stripped.lower() for kw in ['projects', 'skills', 'experience']):
+                hackathon_details.append(stripped[:100])
+    
+    hack_count = max(sum(1 for kw in hackathon_keywords if re.search(kw, text_lower)), len(hackathon_details))
     
     # Also detect GitHub username from links
     github_username = None
@@ -2726,6 +2918,10 @@ def extract_structured_data(text):
         },
         "extracurricular_count": extra_count,
         "hackathon_count": hack_count,
+        "hackathons": {
+            "count": hack_count,
+            "details": hackathon_details[:5]
+        },
         "online_links": {
             "github": f"https://github.com/{github_username}" if github_username else (bool('github' in text_lower)),
             "linkedin": linkedin_url if linkedin_url else (bool('linkedin' in text_lower)),
@@ -2965,7 +3161,19 @@ async def generate_interview(req: InterviewRequest):
     try:
         content = await call_groq_with_retry(prompt, temperature=0.7, max_tokens=1000)
         if not content: return {"error": "AI Interview Pilot offline."}
-        return json.loads(content)
+        
+        parsed = json.loads(content)
+        
+        # Robust schema normalization for llama-3.1-8b
+        if isinstance(parsed, list):
+            return {"script": parsed}
+        if "script" not in parsed:
+            for k, v in parsed.items():
+                if isinstance(v, list):
+                    return {"script": v[:10]}
+            return {"script": [{"question": "Could you walk me through your technical experience?", "target": "N/A"}]}
+            
+        return parsed
     except Exception as e:
         return {"error": str(e)}
 

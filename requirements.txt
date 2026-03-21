@@ -12,3 +12,4 @@ pdf2image
 PyMuPDF
 Pillow
 spacy
+rapidfuzz

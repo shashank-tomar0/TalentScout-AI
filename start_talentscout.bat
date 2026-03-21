@@ -4,25 +4,35 @@ color 0A
 echo.
 echo  ████████╗ █████╗ ██╗     ███████╗███╗   ██╗████████╗███████╗ ██████╗ ██████╗ ██╗   ██╗████████╗
 echo  ╚══██╔══╝██╔══██╗██║     ██╔════╝████╗  ██║╚══██╔══╝██╔════╝██╔════╝██╔═══██╗██║   ██║╚══██╔══╝
+echo  ╚══██╔══╝██╔══██╗██║     ██╔════╝████╗  ██║╚══██╔══╝██╔════╝██╔════╝██╔═██╗██║   ██║╚══██╔══╝
 echo     ██║   ███████║██║     █████╗  ██╔██╗ ██║   ██║   ███████╗██║     ██║   ██║██║   ██║   ██║
 echo     ██║   ██╔══██║██║     ██╔══╝  ██║╚██╗██║   ██║   ╚════██║██║     ██║   ██║██║   ██║   ██║
 echo     ██║   ██║  ██║███████╗███████╗██║ ╚████║   ██║   ███████║╚██████╗╚██████╔╝╚██████╔╝   ██║
 echo.
 echo  [ TALENTSCOUT AI - PRODUCTION STACK ]
 echo.
-echo  [1/3] Checking Python dependencies...
-echo  (Running: pip install -r requirements.txt)
-python -m pip install -r requirements.txt -q
 
+:: 1. Check for Virtual Environment
+if not exist venv (
+    echo [ERROR] Virtual Environment not found!
+    echo Please run 'setup_env.bat' first to install dependencies safely.
+    pause
+    exit /b
+)
+
+echo [1/3] Environment Verified (VENV)
 echo.
-echo  [2/3] Launching FastAPI Backend on port 8000...
-start "TalentScout :: Backend (FastAPI)" cmd /k "echo [BACKEND] Starting... && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+:: 2. Launch Backend
+echo [2/3] Launching FastAPI Backend...
+start "TalentScout :: Backend" cmd /k "call venv\Scripts\activate && echo [BACKEND] Starting... && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
 timeout /t 3 /nobreak > nul
 
+:: 3. Launch Frontend
 echo.
-echo  [3/3] Launching Landing Page (Next.js) on port 3001...
-start "TalentScout :: Frontend (Next.js)" cmd /k "echo [FRONTEND] Installing packages (first run may take a minute)... && cd frontend && npm install && npm run dev -- --port 3001"
+echo [3/3] Launching Next.js Frontend...
+start "TalentScout :: Frontend" cmd /k "echo [FRONTEND] Starting... && cd frontend && npm run dev -- -p 3001"
 
 echo.
 echo  =============================================
